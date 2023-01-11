@@ -116,30 +116,52 @@ uint32_t ETH_HashTableLow = 0x0;
 void HAL_ETH_MspInit(ETH_HandleTypeDef *heth)
 {
   GPIO_InitTypeDef GPIO_InitStructure;
-  const PinMap *map = PinMap_Ethernet;
-  PinName pin = pin_pinName(map);
   GPIO_TypeDef *port;
 
   UNUSED(heth);
 
   /* Ethernet pins configuration ************************************************/
 
-  if (map != NULL) {
-    while (pin != NC) {
-      /* Set port clock */
-      port = set_GPIO_Port_Clock(STM_PORT(pin));
+  #ifdef ETHERNET_RMII_MODE_CONFIGURATION
+    const PinMap *map = PinMap_Ethernet_RMII;
+    PinName pin = pin_pinName(map);
+    if (map != NULL) {
+      while (pin != NC) {
+        /* Set port clock */
+        port = set_GPIO_Port_Clock(STM_PORT(pin));
 
-      /* pin configuration */
-      GPIO_InitStructure.Pin       = STM_GPIO_PIN(pin);
-      GPIO_InitStructure.Mode      = STM_PIN_MODE(pinmap_function(pin, PinMap_Ethernet));
-      GPIO_InitStructure.Pull      = STM_PIN_PUPD(pinmap_function(pin, PinMap_Ethernet));
-      GPIO_InitStructure.Speed     = GPIO_SPEED_FREQ_HIGH;
-      GPIO_InitStructure.Alternate = STM_PIN_AFNUM(pinmap_function(pin, PinMap_Ethernet));
-      HAL_GPIO_Init(port, &GPIO_InitStructure);
+        /* pin configuration */
+        GPIO_InitStructure.Pin       = STM_GPIO_PIN(pin);
+        GPIO_InitStructure.Mode      = STM_PIN_MODE(pinmap_function(pin, PinMap_Ethernet_RMII));
+        GPIO_InitStructure.Pull      = STM_PIN_PUPD(pinmap_function(pin, PinMap_Ethernet_RMII));
+        GPIO_InitStructure.Speed     = GPIO_SPEED_FREQ_HIGH;
+        GPIO_InitStructure.Alternate = STM_PIN_AFNUM(pinmap_function(pin, PinMap_Ethernet_RMII));
+        HAL_GPIO_Init(port, &GPIO_InitStructure);
 
-      pin = pin_pinName(++map);
+        pin = pin_pinName(++map);
+      }
     }
-  }
+  #else
+    const PinMap *map = PinMap_Ethernet_MII;
+    PinName pin = pin_pinName(map);
+    if (map != NULL) {
+      while (pin != NC) {
+        /* Set port clock */
+        port = set_GPIO_Port_Clock(STM_PORT(pin));
+
+        /* pin configuration */
+        GPIO_InitStructure.Pin       = STM_GPIO_PIN(pin);
+        GPIO_InitStructure.Mode      = STM_PIN_MODE(pinmap_function(pin, PinMap_Ethernet_MII));
+        GPIO_InitStructure.Pull      = STM_PIN_PUPD(pinmap_function(pin, PinMap_Ethernet_MII));
+        GPIO_InitStructure.Speed     = GPIO_SPEED_FREQ_HIGH;
+        GPIO_InitStructure.Alternate = STM_PIN_AFNUM(pinmap_function(pin, PinMap_Ethernet_MII));
+        HAL_GPIO_Init(port, &GPIO_InitStructure);
+
+        pin = pin_pinName(++map);
+      }
+    }
+  #endif /* ETHERNET_RMII_MODE_CONFIGURATION */
+
 
 #ifdef ETH_INPUT_USE_IT
   /* Enable the Ethernet global Interrupt */
@@ -181,8 +203,11 @@ static void low_level_init(struct netif *netif)
   EthHandle.Init.RxMode = ETH_RXPOLLING_MODE;
 #endif /* ETH_INPUT_USE_IT */
   EthHandle.Init.ChecksumMode = ETH_CHECKSUM_BY_HARDWARE;
+#ifdef LAN9303
+  EthHandle.Init.PhyAddress = LAN9303_PHY_ADDRESS;
+#else
   EthHandle.Init.PhyAddress = LAN8742A_PHY_ADDRESS;
-
+#endif
   /* configure ethernet peripheral (GPIOs, clocks, MAC, DMA) */
   if (HAL_ETH_Init(&EthHandle) == HAL_OK) {
     /* Set netif link flag */
@@ -219,13 +244,17 @@ static void low_level_init(struct netif *netif)
   netif_set_igmp_mac_filter(netif, igmp_mac_filter);
 #endif
   /**** Configure PHY to generate an interrupt when Eth Link state changes ****/
+
+#ifdef LAN9303
+  /* Add configuration for LAN9303 */
+#else
   /* Read Register Configuration */
   HAL_ETH_ReadPHYRegister(&EthHandle, PHY_IMR, &regvalue);
-
   regvalue |= PHY_ISFR_INT4;
-
   /* Enable Interrupt on change of link status */
   HAL_ETH_WritePHYRegister(&EthHandle, PHY_IMR, regvalue);
+#endif
+
 #if LWIP_IGMP
   ETH_HashTableHigh = EthHandle.Instance->MACHTHR;
   ETH_HashTableLow = EthHandle.Instance->MACHTLR;
@@ -505,6 +534,16 @@ void ethernetif_set_link(struct netif *netif)
 {
   uint32_t regvalue = 0;
 
+#ifdef LAN9303
+  //Add LAN9303 IRQ Handling
+
+  uint32_t SMI_Phy_Addr, SMI_Reg_Addr;
+  LAN9303_To_SMI_Address_Conv(LAN9303_PHY_ADDRESS, PHY_BSR, LOW_WORD_MASK, &SMI_Phy_Addr, &SMI_Reg_Addr);
+  EthHandle.Init.PhyAddress = SMI_Phy_Addr;
+  HAL_ETH_ReadPHYRegister(&EthHandle, SMI_Reg_Addr, &regvalue);
+  EthHandle.Init.PhyAddress = LAN9303_PHY_ADDRESS;
+
+#else
   /* Read PHY_MISR*/
   HAL_ETH_ReadPHYRegister(&EthHandle, PHY_ISFR, &regvalue);
 
@@ -514,6 +553,7 @@ void ethernetif_set_link(struct netif *netif)
   }
 
   HAL_ETH_ReadPHYRegister(&EthHandle, PHY_BSR, &regvalue);
+#endif
 
   if ((regvalue & PHY_LINKED_STATUS) != (uint16_t)RESET) {
 #if LWIP_IGMP
@@ -536,11 +576,56 @@ void ethernetif_set_link(struct netif *netif)
 void ethernetif_update_config(struct netif *netif)
 {
   uint32_t regvalue = 0;
+  uint32_t SMI_Phy_Addr, SMI_Reg_Addr, SMI_Reg_Ret_Val;
 
   if (netif_is_link_up(netif)) {
     /* Restart the auto-negotiation */
     if (EthHandle.Init.AutoNegotiation != ETH_AUTONEGOTIATION_DISABLE) {
 
+#ifdef LAN9303
+      /* Check Auto negotiation */
+      LAN9303_To_SMI_Address_Conv(LAN9303_PHY_ADDRESS, PHY_BSR, LOW_WORD_MASK, &SMI_Phy_Addr, &SMI_Reg_Addr);
+      EthHandle.Init.PhyAddress = SMI_Phy_Addr;
+      HAL_ETH_ReadPHYRegister(&EthHandle, SMI_Reg_Addr, &SMI_Reg_Ret_Val);
+      regvalue = (uint32_t)0x00 | SMI_Reg_Ret_Val;
+      LAN9303_To_SMI_Address_Conv(LAN9303_PHY_ADDRESS, PHY_BSR, HIGH_WORD_MASK, &SMI_Phy_Addr, &SMI_Reg_Addr);
+      EthHandle.Init.PhyAddress = SMI_Phy_Addr;
+      HAL_ETH_ReadPHYRegister(&EthHandle, SMI_Reg_Addr, &SMI_Reg_Ret_Val);
+      regvalue |= SMI_Reg_Ret_Val << 16;
+      EthHandle.Init.PhyAddress = LAN9303_PHY_ADDRESS;
+      if ((regvalue & PHY_BSR_AUTONEG_COMPLETE) != PHY_BSR_AUTONEG_COMPLETE) {
+        goto error;
+      }
+      /* Configure the MAC with the Duplex Mode fixed by the auto-negotiation process */
+      if (((regvalue & PHY_BASE_T_FULL_DUPLEX) | (regvalue & PHY_BASE_T_FULL_DUPLEX) | (regvalue & PHY_BASE_T2_FULL_DUPLEX)) != (uint32_t)RESET) {
+        /* Set Ethernet duplex mode to Full-duplex following the auto-negotiation */
+        EthHandle.Init.DuplexMode = ETH_MODE_FULLDUPLEX;
+      } else {
+        /* Set Ethernet duplex mode to Half-duplex following the auto-negotiation */
+        EthHandle.Init.DuplexMode = ETH_MODE_HALFDUPLEX;
+      }
+      /* Configure the MAC with the speed fixed by the auto-negotiation process */
+      if ((regvalue & PHY_BASE_T2_FULL_DUPLEX) | (regvalue & PHY_BASE_T2_HALF_DUPLEX) 
+          | (regvalue & PHY_BASE_X_FULL_DUPLEX) | (regvalue & PHY_BASE_X_HALF_DUPLEX)) {
+        /* Set Ethernet speed to 10M following the auto-negotiation */
+        EthHandle.Init.Speed = ETH_SPEED_100M;
+      } else {
+        /* Set Ethernet speed to 100M following the auto-negotiation */
+        EthHandle.Init.Speed = ETH_SPEED_10M;
+      }
+    } else { /* AutoNegotiation Disable */
+error :
+      /* Check parameters */
+      assert_param(IS_ETH_SPEED(EthHandle.Init.Speed));
+      assert_param(IS_ETH_DUPLEX_MODE(EthHandle.Init.DuplexMode));
+
+      /* Set MAC Speed and Duplex Mode to PHY */
+      LAN9303_To_SMI_Address_Conv(LAN9303_PHY_ADDRESS, PHY_BCR, LOW_WORD_MASK, &SMI_Phy_Addr, &SMI_Reg_Addr);
+      EthHandle.Init.PhyAddress = SMI_Phy_Addr;
+      HAL_ETH_WritePHYRegister(&EthHandle, SMI_Reg_Addr, ((uint16_t)(EthHandle.Init.DuplexMode >> 3) |
+                                                     (uint16_t)(EthHandle.Init.Speed >> 1)));
+      EthHandle.Init.PhyAddress = LAN9303_PHY_ADDRESS;
+#else
       /* Check Auto negotiation */
       HAL_ETH_ReadPHYRegister(&EthHandle, PHY_SR, &regvalue);
       if ((regvalue & PHY_SR_AUTODONE) != PHY_SR_AUTODONE) {
@@ -572,6 +657,7 @@ error :
       /* Set MAC Speed and Duplex Mode to PHY */
       HAL_ETH_WritePHYRegister(&EthHandle, PHY_BCR, ((uint16_t)(EthHandle.Init.DuplexMode >> 3) |
                                                      (uint16_t)(EthHandle.Init.Speed >> 1)));
+#endif
     }
 
     /* ETHERNET MAC Re-Configuration */
@@ -612,6 +698,25 @@ void ethernetif_set_mac_addr(const uint8_t *mac)
     memcpy(macaddress, mac, 6);
   }
 }
+
+#ifdef LAN9303
+void LAN9303_To_SMI_Address_Conv(uint32_t LAN9303_Phy_Addr, uint32_t LAN9303_Reg_Addr, 
+                                 uint8_t Word_Order, uint32_t* SMI_Phy_Addr, uint32_t* SMI_Reg_Addr){
+  	//SMI Phy Addr Conversion
+	*SMI_Phy_Addr = PHY_ADDR_INIT_VAL;
+	*SMI_Phy_Addr |= (LAN9303_Reg_Addr & PHY_ADDR_MASK) >> 6;
+	//SMI Reg Addr Conversion
+	*SMI_Reg_Addr = PHY_REG_ADDR_INIT_VAL;
+	*SMI_Reg_Addr |= (LAN9303_Reg_Addr & PHY_REG_MASK) >> 1;
+	//Conv SMI Addr to select proper word
+	if(Word_Order == 0){
+		*SMI_Reg_Addr |= PHY_REG_LO_WORD_MASK;
+	}
+	if(Word_Order == 1){
+		*SMI_Reg_Addr |= PHY_REG_HI_WORD_MASK;
+	}
+  }
+#endif
 
 #if LWIP_IGMP
 err_t igmp_mac_filter(struct netif *netif, const ip4_addr_t *ip4_addr, netif_mac_filter_action action)

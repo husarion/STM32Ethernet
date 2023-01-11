@@ -15,6 +15,7 @@ class EthernetClient : public Client {
 
     uint8_t status();
     virtual int connect(IPAddress ip, uint16_t port);
+    virtual int connect(IPAddress ip, uint16_t port, uint16_t timeout);
     virtual int connect(const char *host, uint16_t port);
     virtual size_t write(uint8_t);
     virtual size_t write(const uint8_t *buf, size_t size);
@@ -52,10 +53,6 @@ class EthernetClient : public Client {
     {
       return (_tcp_client->pcb->remote_port);
     };
-    void setTimeout(uint16_t timeout)
-    {
-      _timeout = timeout;
-    }
 
     friend class EthernetServer;
 
@@ -63,7 +60,6 @@ class EthernetClient : public Client {
 
   private:
     struct tcp_struct *_tcp_client;
-    uint16_t _timeout = 10000;
 };
 
 #endif

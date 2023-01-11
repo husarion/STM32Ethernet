@@ -62,6 +62,11 @@ void ethernetif_notify_conn_changed(struct netif *netif);
 
 void ethernetif_set_mac_addr(const uint8_t *mac);
 
+#ifdef LAN9303
+void LAN9303_To_SMI_Address_Conv(uint32_t LAN9303_Phy_Addr, uint32_t LAN9303_Reg_Addr, 
+                                 uint8_t Word_Order, uint32_t* SMI_Phy_Addr, uint32_t* SMI_Reg_Addr);
+#endif
+
 #if LWIP_IGMP
 err_t igmp_mac_filter(struct netif *netif, const ip4_addr_t *ip4_addr, netif_mac_filter_action action);
 void register_multicast_address(const uint8_t *mac);

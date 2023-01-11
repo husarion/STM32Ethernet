@@ -9,9 +9,7 @@ extern "C" {
 EthernetServer::EthernetServer(uint16_t port)
 {
   _port = port;
-  for (int i = 0; i < MAX_CLIENT; i++) {
-    _tcp_client[i] = {};
-  }
+  _tcp_client[MAX_CLIENT] = {};
   _tcp_server = {};
 }
 
@@ -38,12 +36,6 @@ void EthernetServer::begin()
 
   _tcp_server.pcb = tcp_listen(_tcp_server.pcb);
   tcp_accept(_tcp_server.pcb, tcp_accept_callback);
-}
-
-void EthernetServer::begin(uint16_t port)
-{
-  _port = port;
-  begin();
 }
 
 void EthernetServer::accept()
