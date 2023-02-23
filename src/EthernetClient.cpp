@@ -81,8 +81,12 @@ int EthernetClient::connect(IPAddress ip, uint16_t port)
       return 0;
     }
   }
-
   return 1;
+}
+
+int EthernetClient::connect(IPAddress ip, uint16_t port, timeout){
+  this->setTimeout(timeout);
+  return this->connect(ip, port);
 }
 
 size_t EthernetClient::write(uint8_t b)

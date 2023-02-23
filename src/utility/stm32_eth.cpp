@@ -32,20 +32,27 @@
   * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
   * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
   * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+  * 
   *
   ******************************************************************************
   */
 
-#include "Arduino.h"
 #include "stm32_eth.h"
-#include "lwip/init.h"
-#include "lwip/netif.h"
-#include "lwip/timeouts.h"
-#include "netif/ethernet.h"
+
+#include "Arduino.h"
 #include "ethernetif.h"
 #include "lwip/dhcp.h"
-#include "lwip/prot/dhcp.h"
 #include "lwip/dns.h"
+#include "lwip/init.h"
+#include "lwip/netif.h"
+#include "lwip/prot/dhcp.h"
+#include "lwip/timeouts.h"
+#include "netif/ethernet.h"
+
+#ifdef ETHERNET_USE_FREERTOS
+#include <STM32FreeRTOS.h>
+#include "stm32f4xx_hal.h"
+#endif
 
 /* Check ethernet link status every seconds */
 #define TIME_CHECK_ETH_LINK_STATE 500U
@@ -54,7 +61,7 @@
 #define TIMEOUT_DNS_REQUEST 10000U
 
 /* Maximum number of retries for DHCP request */
-#define MAX_DHCP_TRIES  4
+#define MAX_DHCP_TRIES 4
 
 /*
  * Defined a default timer used to call ethernet scheduler at regular interval
@@ -121,8 +128,7 @@ static void TIM_scheduler_Config(void);
 * @param  None
 * @retval None
 */
-static void Netif_Config(void)
-{
+static void Netif_Config(void) {
   netif_remove(&gnetif);
   /* Add the network interface */
   netif_add(&gnetif, &(gconfig.ipaddr), &(gconfig.netmask), &(gconfig.gw), NULL, &ethernetif_init, &ethernet_input);
@@ -149,29 +155,28 @@ static void Netif_Config(void)
 * @param  htim: pointer to stimer_t or Hardware Timer
 * @retval None
 */
-#if !defined(STM32_CORE_VERSION) || (STM32_CORE_VERSION  <= 0x01060100)
+#if !defined(STM32_CORE_VERSION) || (STM32_CORE_VERSION <= 0x01060100)
   static void scheduler_callback(stimer_t *htim)
-#elif (STM32_CORE_VERSION  <= 0x01080000)
+#elif (STM32_CORE_VERSION <= 0x01080000)
   static void scheduler_callback(HardwareTimer *htim)
 #else
   static void scheduler_callback(void)
 #endif
 {
-#if (STM32_CORE_VERSION  <= 0x01080000)
+#if (STM32_CORE_VERSION <= 0x01080000)
   UNUSED(htim);
 #endif
   _stm32_eth_scheduler();
 }
 
-#if !defined(STM32_CORE_VERSION) || (STM32_CORE_VERSION  <= 0x01060100)
+#if !defined(STM32_CORE_VERSION) || (STM32_CORE_VERSION <= 0x01060100)
 /**
 * @brief  Enable the timer used to call ethernet scheduler function at regular
 *         interval.
 * @param  None
 * @retval None
 */
-static void TIM_scheduler_Config(void)
-{
+static void TIM_scheduler_Config(void) {
   /* Set TIMx instance. */
   TimHandle.timer = DEFAULT_ETHERNET_TIMER;
   /* Timer set to 1ms */
@@ -185,8 +190,7 @@ static void TIM_scheduler_Config(void)
 * @param  None
 * @retval None
 */
-static void TIM_scheduler_Config(void)
-{
+static void TIM_scheduler_Config(void) {
   /* Configure HardwareTimer */
   EthTim = new HardwareTimer(DEFAULT_ETHERNET_TIMER);
   EthTim->setInterruptPriority(ETH_TIM_IRQ_PRIO, ETH_TIM_IRQ_SUBPRIO);
@@ -199,6 +203,80 @@ static void TIM_scheduler_Config(void)
 }
 #endif
 
+#ifdef ETHERNET_USE_FREERTOS
+
+// redefinitions of time "_weak" base functions for HAL (from stm32f4xx_hal.c)
+
+HAL_StatusTypeDef HAL_InitTick(uint32_t TickPriority) {
+  if (taskSCHEDULER_NOT_STARTED == xTaskGetSchedulerState()) {
+    /* Configure the SysTick to have interrupt in 1ms time basis*/
+    if (HAL_SYSTICK_Config(SystemCoreClock / (1000U / uwTickFreq)) > 0U) {
+      return HAL_ERROR;
+    }
+
+    /* Configure the SysTick IRQ priority */
+    if (TickPriority < (1UL << __NVIC_PRIO_BITS)) {
+      HAL_NVIC_SetPriority(SysTick_IRQn, TickPriority, 0U);
+      uwTickPrio = TickPriority;
+    } else {
+      return HAL_ERROR;
+    }
+  }
+
+  /* Return function status */
+  return HAL_OK;
+}
+
+void HAL_IncTick(void) {
+  if (taskSCHEDULER_NOT_STARTED == xTaskGetSchedulerState()) {
+    uwTick += uwTickFreq;
+  }
+}
+
+uint32_t HAL_GetTick(void) {
+  if (taskSCHEDULER_NOT_STARTED == xTaskGetSchedulerState()) {
+    return uwTick;
+  } else {
+    return xTaskGetTickCountFromISR();
+  }
+}
+
+void HAL_Delay(uint32_t Delay) {
+  uint32_t tickstart = HAL_GetTick();
+  uint32_t wait = Delay;
+
+  /* Add a freq to guarantee minimum wait */
+  if (wait < HAL_MAX_DELAY) {
+    wait += (uint32_t)(uwTickFreq);
+  }
+
+  while ((HAL_GetTick() - tickstart) < wait) {
+  }
+}
+
+void HAL_SuspendTick(void) {
+  /* Disable SysTick Interrupt */
+  if (taskSCHEDULER_NOT_STARTED == xTaskGetSchedulerState()) {
+    SysTick->CTRL &= ~SysTick_CTRL_TICKINT_Msk;
+  }
+}
+
+void HAL_ResumeTick(void) {
+  /* Enable SysTick Interrupt */
+  if (taskSCHEDULER_NOT_STARTED == xTaskGetSchedulerState()) {
+    SysTick->CTRL |= SysTick_CTRL_TICKINT_Msk;
+  }
+}
+
+static void ethernet_scheduler_task(void *p) {
+  UNUSED(p);
+  while (1) {
+    vTaskDelay(1);
+    scheduler_callback();
+  }
+}
+#endif
+
 void stm32_eth_init(const uint8_t *mac, const uint8_t *ip, const uint8_t *gw, const uint8_t *netmask)
 {
   static uint8_t initDone = 0;
@@ -206,7 +284,6 @@ void stm32_eth_init(const uint8_t *mac, const uint8_t *ip, const uint8_t *gw, co
   if (!initDone) {
     /* Initialize the LwIP stack */
     lwip_init();
-  }
 
   if (mac != NULL) {
     ethernetif_set_mac_addr(mac);
@@ -245,9 +322,23 @@ void stm32_eth_init(const uint8_t *mac, const uint8_t *ip, const uint8_t *gw, co
   /* Configure the Network interface */
   Netif_Config();
 
-  if (!initDone) {
+  #ifdef ETHERNET_USE_FREERTOS
+    portBASE_TYPE s1;
+    // Start scheduler task
+    s1 = xTaskCreate(
+        ethernet_scheduler_task, (const portCHAR *)"ethernet_scheduler",
+        configMINIMAL_STACK_SIZE + 200, NULL, tskIDLE_PRIORITY + 5, NULL);
+
+    // check for creation errors
+    if (s1 != pdPASS) {
+      while (1)
+        ;
+    }
+#else
     // stm32_eth_scheduler() will be called every 1ms.
     TIM_scheduler_Config();
+#endif
+
     initDone = 1;
   }
 
