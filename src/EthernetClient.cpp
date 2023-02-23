@@ -84,7 +84,7 @@ int EthernetClient::connect(IPAddress ip, uint16_t port)
   return 1;
 }
 
-int EthernetClient::connect(IPAddress ip, uint16_t port, timeout){
+int EthernetClient::connect(IPAddress ip, uint16_t port, uint16_t timeout){
   this->setTimeout(timeout);
   return this->connect(ip, port);
 }
